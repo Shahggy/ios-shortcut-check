@@ -1,0 +1,18 @@
+name: Apple shortcut check
+on: workflow_dispatch
+permissions: {}
+jobs:
+  simulator:
+    # No private, paid, larger or self-hosted fallback. No scheduled or PR runs.
+    if: github.event.repository.visibility == 'public' && github.actor == github.repository_owner && github.ref == 'refs/heads/main'
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - name: Run the reviewed public test
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init -q .
+          git fetch -q --no-tags --depth=1 "https://github.com/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
+          git checkout -q --detach FETCH_HEAD
+          python3 run.py
