@@ -35,15 +35,34 @@ private func receipt(for url: URL) -> String? {
     UserDefaults.standard.removeObject(forKey: "pending-" + parts[1])
     let prefix = "Native " + parts[1] + " " + parts[3]
     let fields = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-    let message = fields.first { $0.name == "errorMessage" }?.value?.lowercased() ?? ""
+    let message = fields.first { $0.name.lowercased() == "errormessage" }?.value ?? ""
     let result = fields.first { $0.name == "result" }?.value?.lowercased() ?? ""
     if result.contains("öffne mein tag in safari") { return prefix + " unpaired" }
     if result.contains("verbunden") { return prefix + " paired" }
-    let categories = [("icloud", "cloud"), ("apple account", "account"),
-                      ("not installed", "uninstalled"), ("not found", "missing"),
-                      ("file", "file"), ("permission", "permission"), ("network", "network"),
-                      ("timed out", "timeout"), ("not available", "unavailable")]
-    if let category = categories.first(where: { message.contains($0.0) }) { return prefix + " " + category.1 }
+    if parts[3] == "error" {
+        let code = fields.first { $0.name.lowercased() == "errorcode" }?.value
+        let number = code.flatMap(Int.init).map { " code " + String($0) } ?? ""
+        let allowed = Set(("a an the is this that for of to in on at with not no can cannot could couldn t " +
+            "was wasen were be been operation completed failed run running action shortcut shortcuts workflow " +
+            "file files folder path found missing does exist exists unavailable available app application " +
+            "installed service server runner connection connected invalid invalidated request denied allowed " +
+            "permission interaction required account apple icloud drive device simulator access error domain " +
+            "please select choose provide value input output parameter parameters argument arguments name " +
+            "data type supported unsupported extension process execution stopped canceled cancelled user " +
+            "unknown problem unexpected occurred communicate couldn’t successfully open read write save " +
+            "must before using first time used upgrade update newer version contact developer couldn’t " +
+            "internal anwendung aktion kurzbefehl datei ordner nicht gefunden konnte fehlgeschlagen").split(separator:" ").map(String.init))
+        let words = message.replacingOccurrences(of:"+",with:" ").split(whereSeparator:{ !$0.isLetter && !$0.isNumber && $0 != "-" })
+        let retained = words.prefix(65).map { token -> String in
+            let word = String(token), lower = word.lowercased()
+            if allowed.contains(lower) { return lower }
+            if word.range(of:"^(?:NS|WF|IN|OS|VC|LN|FP|RBS|LS|Siri|AppIntents)[A-Za-z]{1,65}(?:Domain|Error|Action)$",options:.regularExpression) != nil { return word }
+            if word.range(of:"^-?[0-9]{1,7}$",options:.regularExpression) != nil { return word }
+            return "_"
+        }
+        let details = retained.isEmpty ? "no system message" : retained.joined(separator:" ")
+        return prefix + number + " " + details
+    }
     return prefix
 }
 
@@ -74,6 +93,9 @@ private func receipt(for url: URL) -> String? {
                     shortcut(returning: "direct")
                 }
                 Button("Share test appointment") { shortcut("Testtermin der Simulatorprobe morgen um 15 Uhr") }
+                Button("Inspect installed shortcut") {
+                    UIApplication.shared.open(URL(string: "shortcuts://open-shortcut?name=ShagAttack")!)
+                }
                 Button("Pair test simulator") {
                     lastReturn = ""
                     shortcut(production + "/?view=dashboard#mein-tag-diktat=1&key=" + testKey + "&id=[Zufallszahl]&at=[Datum]&text=[URL-codierter Text]", returning: "pair")

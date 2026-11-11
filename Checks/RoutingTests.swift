@@ -275,6 +275,20 @@ final class RoutingTests: XCTestCase {
         evidence("named_shortcut_visible_in_apple_library_before_pair")
         action("Pair test simulator")
         let result = callbackResult("pair",seconds:40)
+        if let reply = result.receipt, reply.hasPrefix("Native pair error") {
+            action("Inspect installed shortcut")
+            var edited = false
+            _ = observe("editor_after_pair_error",seconds:15) { screen in
+                if self.contains("unknown action",screen) || self.contains("app not installed",screen) {
+                    self.evidence("editor_reports_unavailable_action")
+                    return true
+                }
+                if !edited && self.tap(["Edit","Bearbeiten"],on:self.shortcuts,screen:screen) { edited = true }
+                return self.contains("Current Date",screen) && self.contains("Text",screen)
+            }
+            XCTFail("Installed shortcut rejected the pairing request. " + reply)
+            return
+        }
         if result.receipt?.hasPrefix("Native pair success") == true {
             evidence("native_pair_success_callback_observed")
         }

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import platform
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -70,9 +71,9 @@ def simulator_diagnostics(udid):
             break
     print("SIMULATOR_EVIDENCE", json.dumps({"syntheticPairingFileContentsVerified": found}), flush=True)
     # Public logs contain only fixed diagnostic labels from the test runtime.
-    predicate = ('(process == "Shortcuts" OR process == "siriactionsd" OR process == "assistantd" '
-                 'OR subsystem BEGINSWITH "com.apple.WorkflowKit") AND '
-                 '(messageType == error OR messageType == fault)')
+    predicate = ('(process CONTAINS[c] "shortcut" OR process CONTAINS[c] "workflow" '
+                 'OR process == "siriactionsd" OR subsystem CONTAINS[c] "workflow" '
+                 'OR subsystem CONTAINS[c] "shortcut")')
     try:
         log = call("xcrun", "simctl", "spawn", udid, "log", "show", "--last", "14m",
                    "--style", "compact", "--predicate", predicate, capture=True, timeout=40, check=False)
@@ -85,6 +86,15 @@ def simulator_diagnostics(udid):
         print("SIMULATOR_EVIDENCE", json.dumps({"systemDiagnosticsMatched": [
             label for label, terms in signals.items() if any(term in messages for term in terms)
         ]}), flush=True)
+        # Only allow public Apple-style error domain names and numeric codes.
+        # Never print messages, paths, request values, or userInfo dictionaries.
+        domains = set()
+        for line in log.stdout.splitlines():
+            if not any(token in line.lower() for token in ("error", "failed", "unavailable", "denied")):
+                continue
+            for match in re.finditer(r"\b((?:NS|WF|OS|IN|LN|FP|RBS|LS|Siri|AppIntents)[A-Za-z]{1,60}Domain)\b[^\n]{0,18}?\b(?:code\s*[=:]?\s*|error\s+)(-?\d{1,7})\b", line, re.I):
+                domains.add(match.group(1) + " " + match.group(2))
+        print("SIMULATOR_EVIDENCE", json.dumps({"observedShortcutProcessErrorCodes": sorted(domains)[:20]}), flush=True)
     except (OSError, subprocess.TimeoutExpired):
         print("SIMULATOR_EVIDENCE system_diagnostics_unavailable", flush=True)
 
