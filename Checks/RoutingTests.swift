@@ -87,7 +87,7 @@ final class RoutingTests: XCTestCase {
     private func prepareLibrary() {
         shortcuts.launch()
         let initial = lines("shortcuts_library")
-        if contains("Welcome",initial) || contains("Willkommen",initial) {
+        if contains("Welcome",initial) || contains("Willkommen",initial) || contains("New in Shortcuts",initial) || contains("Neu in Kurzbefehle",initial) {
             tap(["Continue","Weiter","Get Started"],on:shortcuts,screen:initial)
         }
     }
@@ -118,7 +118,19 @@ final class RoutingTests: XCTestCase {
                 return true
             }
             if front === self.files {
-                if once("file",["ShagAttack","ShagAttack.shortcut"],prefix:true) { return false }
+                // Tapping a file's filename in grid view starts renaming. Tap its document icon.
+                if self.contains("ShagAttack",screen) && once("documentIcon",["SHORTCUT"]) {
+                    self.evidence("tapped_signed_document_icon_in_files")
+                    return false
+                }
+                if !taken.contains("documentIcon") && self.contains("ShagAttack",screen) {
+                    let row = self.files.cells.containing(NSPredicate(format:"label BEGINSWITH[c] %@", "ShagAttack")).firstMatch
+                    if row.exists && row.isHittable {
+                        taken.insert("documentIcon")
+                        row.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.28)).tap()
+                        return false
+                    }
+                }
                 if once("folder",["Shortcut Lab","Probe"],prefix:true) { return false }
                 if once("local",["On My iPhone","Auf meinem iPhone"],prefix:true) { return false }
                 if once("browse",["Browse","Durchsuchen"]) { return false }
@@ -147,7 +159,7 @@ final class RoutingTests: XCTestCase {
         defer { safari.terminate() }
         let loaded = observe("public_safari",seconds:50) {
             self.safari.state == .runningForeground &&
-            (self.contains("Dein Tag auf allen", $0) || self.contains("Danach direkt loslegen", $0))
+            (self.contains("Dein Tag auf allen", $0) || self.contains("Danach direkt loslegen", $0) || (self.contains("Aufgaben und Termine an einem Ort", $0) && self.contains("App Passwort", $0)))
         }
         XCTAssertTrue(loaded,"The rendered application sign-in screen was not observed.")
         if loaded { evidence("public_web_app_opened_in_simulated_safari") }
