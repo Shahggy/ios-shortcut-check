@@ -6,6 +6,8 @@ The test opens the public ShagAttack download in Safari. A second copy, verified
 
 Pairing uses Apple's documented success, cancellation and error callbacks, as in the web app. The test app accepts a response only for its pending request. A completion callback, matching contents of the disposable pairing file, and a visible workflow-specific message are reported separately. Only fixed diagnostic labels and test outcomes are published.
 
+The default run prioritizes installation and pairing in a single fresh-device session. It then shares a synthetic appointment through the installed shortcut and checks whether Safari receives it in the unsigned-in web app. `python3 run.py --full` runs the separate Safari, direct launch, Siri and Clock cases. These were also exercised by earlier public runs.
+
 Cloud configuration: one manually dispatched **standard** GitHub-hosted macOS runner, public repository only, owner only, 20-minute timeout. No schedules, paid runner fallback, caches, uploaded artifacts or paid APIs. Test code, run logs, the shortcut's name and its already-public download address will be visible if this test project is published. No app source, personal tasks, real pairing values, account credentials, or phone screenshots are included.
 
 On a Mac with Xcode and Homebrew the same probe can also run locally. It creates and removes only its own simulator. It cannot deliver an update or grant permissions on a separate physical iPhone.

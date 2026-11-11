@@ -99,7 +99,7 @@ final class RoutingTests: XCTestCase {
         else if SystemApps.hasFiles { files.launch() }
         else { return false }
         var taken = Set<String>()
-        return observe(inSafari ? "safari_import" : "files_import", seconds:50) { screen in
+        return observe(inSafari ? "safari_import" : "files_import", seconds:inSafari ? 50 : 85) { screen in
             guard let front = [self.shortcuts,self.files,self.safari,self.home].first(where: { $0.state == .runningForeground }) else { return false }
             func once(_ key: String, _ names: [String], prefix: Bool = false) -> Bool {
                 guard !taken.contains(key), self.tap(names,on:front,screen:screen,prefix:prefix) else { return false }
@@ -118,21 +118,27 @@ final class RoutingTests: XCTestCase {
                 return true
             }
             if front === self.files {
+                // After entering the folder, Files briefly keeps the same labels in its
+                // toolbar. Tapping that toolbar opens the folder menu, not the document.
+                if taken.contains("folder") && !self.contains("ShagAttack",screen) { return false }
                 // Tapping a file's filename in grid view starts renaming. Tap its document icon.
                 if self.contains("ShagAttack",screen) && once("documentIcon",["SHORTCUT"]) {
                     self.evidence("tapped_signed_document_icon_in_files")
                     return false
                 }
                 if !taken.contains("documentIcon") && self.contains("ShagAttack",screen) {
-                    let row = self.files.cells.containing(NSPredicate(format:"label BEGINSWITH[c] %@", "ShagAttack")).firstMatch
-                    if row.exists && row.isHittable {
+                    if let filename = screen.first(where: {
+                        self.folded($0.label).hasPrefix("shagattack") && $0.box.midY < 0.85
+                    }) {
                         taken.insert("documentIcon")
-                        row.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.28)).tap()
+                        // Both previous observed Files screens placed the icon 0.04 above its label.
+                        front.coordinate(withNormalizedOffset:CGVector(dx:filename.box.midX,dy:1-filename.box.midY-0.04)).tap()
                         return false
                     }
                 }
                 if once("folder",["Shortcut Lab","Probe"],prefix:true) { return false }
-                if once("local",["On My iPhone","Auf meinem iPhone"],prefix:true) { return false }
+                if (self.contains("Locations",screen) || self.contains("Speicherorte",screen)) &&
+                    once("local",["On My iPhone","Auf meinem iPhone"],prefix:true) { return false }
                 if once("browse",["Browse","Durchsuchen"]) { return false }
                 if once("fileWelcome",["Continue","Weiter"]) { return false }
                 _ = once("openWith",["Open in Shortcuts","In Kurzbefehle öffnen","Open With","Öffnen mit","Shortcuts","Kurzbefehle"])
@@ -251,5 +257,46 @@ final class RoutingTests: XCTestCase {
         }
         XCTAssertTrue(found,"The named alarm was not visible in Clock.")
         if found { evidence("named_alarm_observed_in_simulated_clock_no_sound_or_physical_snooze_claim") }
+    }
+
+    // A single fresh-device session: prove the install before requesting any
+    // callback. An empty library makes pairing diagnostics uninformative.
+    func testInstalledWorkflowPairing() {
+        host.launch()
+        prepareLibrary()
+        guard importFile(inSafari:false) else { XCTFail("No verified native import. Pairing was not attempted."); return }
+        let installed = observe("installed_library",seconds:22) { screen in
+            guard self.shortcuts.state == .runningForeground else { return false }
+            if self.tap(["Add Shortcut","Kurzbefehl hinzufügen"],on:self.shortcuts,screen:screen) { return false }
+            let library = self.contains("All Shortcuts",screen) || self.contains("Alle Kurzbefehle",screen)
+            return library && self.contains("ShagAttack",screen)
+        }
+        guard installed else { XCTFail("The named shortcut was not visible in the collection."); return }
+        evidence("named_shortcut_visible_in_apple_library_before_pair")
+        action("Pair test simulator")
+        let result = callbackResult("pair",seconds:40)
+        if result.receipt?.hasPrefix("Native pair success") == true {
+            evidence("native_pair_success_callback_observed")
+        }
+        if result.workflowMessage || result.receipt == "Native pair success paired" {
+            evidence("synthetic_simulator_pairing_acknowledged")
+        }
+        // Only the configured workflow can turn this harmless shared text
+        // into a Safari handoff. No production account exists on this device.
+        action("Share test appointment")
+        let opened = observe("shared_appointment",seconds:50) { screen in
+            if self.safari.state == .runningForeground && self.contains("Aufgaben und Termine an einem Ort",screen) {
+                return true
+            }
+            if self.shortcuts.state == .runningForeground {
+                if self.contains("open", screen) || self.contains("allow", screen) {
+                    _ = self.tap(["Allow Once","Allow","Open","Einmal erlauben","Öffnen"],on:self.shortcuts,screen:screen)
+                }
+            }
+            return false
+        }
+        if opened { evidence("paired_native_share_reached_public_login_without_account") }
+        XCTAssertTrue(opened, "No task handoff observed from the installed workflow.")
+        XCTAssertTrue(result.receipt?.hasPrefix("Native pair success") == true, "Pairing callback: " + (result.receipt ?? "none"))
     }
 }

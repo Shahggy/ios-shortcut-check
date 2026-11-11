@@ -136,7 +136,10 @@ def run():
                 call(*args,"-only-testing:Checks/RoutingTests/testPublishedAppOpensInSafari","test",timeout=540)
                 raise SystemExit("BLOCKED: Apple Shortcuts is absent from this runtime; no Siri/Clock shortcut test can pass.")
             try:
-                call(*args,"test",timeout=695)
+                if "--full" in sys.argv:
+                    call(*args, "-skip-testing:Checks/RoutingTests/testInstalledWorkflowPairing", "test", timeout=695)
+                else:
+                    call(*args, "-only-testing:Checks/RoutingTests/testInstalledWorkflowPairing", "test", timeout=580)
             finally:
                 simulator_diagnostics(udid)
             if clock is None:

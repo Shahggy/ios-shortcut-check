@@ -73,6 +73,7 @@ private func receipt(for url: URL) -> String? {
                     lastReturn = ""
                     shortcut(returning: "direct")
                 }
+                Button("Share test appointment") { shortcut("Testtermin der Simulatorprobe morgen um 15 Uhr") }
                 Button("Pair test simulator") {
                     lastReturn = ""
                     shortcut(production + "/?view=dashboard#mein-tag-diktat=1&key=" + testKey + "&id=[Zufallszahl]&at=[Datum]&text=[URL-codierter Text]", returning: "pair")
