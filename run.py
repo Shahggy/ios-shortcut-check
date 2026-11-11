@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,21 @@ def choose(runtimes):
 def call(*args, capture=False, timeout=240, check=True):
     return subprocess.run(args,check=check,text=True,capture_output=capture,timeout=timeout)
 
+def installed_apps(device):
+    inventory = call("xcrun", "simctl", "listapps", device, capture=True).stdout
+    converted = subprocess.run(["plutil", "-convert", "xml1", "-o", "-", "-"],
+                               input=inventory.encode(), capture_output=True, check=True, timeout=60)
+    return plistlib.loads(converted.stdout)
+
+def clock_bundle(apps):
+    for identifier, info in apps.items():
+        if not identifier.startswith("com.apple.") or info.get("Bundle", "").endswith(".appex"):
+            continue
+        names = {str(info.get(key, "")).casefold() for key in ("CFBundleDisplayName", "CFBundleName")}
+        if identifier in {"com.apple.mobiletimer", "com.apple.clock"} or names.intersection({"clock", "uhr"}):
+            return identifier
+    return None
+
 def run():
     if platform.system() != "Darwin":
         raise SystemExit("NOT RUN: Xcode/macOS required. No iPhone result.")
@@ -51,13 +67,20 @@ def run():
     uuid.UUID(udid)
     try:
         call("xcrun","simctl","bootstatus",udid,"-b",timeout=360)
-        capabilities={b:call("xcrun","simctl","get_app_container",udid,b,"app",capture=True,check=False).returncode==0
-                      for b in ("com.apple.shortcuts","com.apple.mobilesafari","com.apple.mobiletimer")}
+        apps = installed_apps(udid)
+        capabilities={b:b in apps for b in ("com.apple.shortcuts","com.apple.mobilesafari","com.apple.DocumentsApp")}
+        clock = clock_bundle(apps)
+        capabilities["clockBundle"] = clock
         print("SIMULATOR_EVIDENCE",json.dumps(capabilities),flush=True)
         with tempfile.TemporaryDirectory(prefix="shortcut-lab-") as tmp:
             root=Path(tmp)
             for name in ("Probe","Checks"): shutil.copytree(HERE/name,root/name)
             shutil.copy(HERE/"project.yml",root)
+            clock_literal = json.dumps(clock) if clock else "nil"
+            files_literal = str(capabilities["com.apple.DocumentsApp"]).lower()
+            (root/"Checks"/"SystemApps.swift").write_text(
+                "enum SystemApps {\n    static let clock: String? = " + clock_literal +
+                "\n    static let hasFiles = " + files_literal + "\n}\n", encoding="utf-8")
             with urllib.request.urlopen(PUBLIC_FILE,timeout=30) as response:
                 if response.geturl()!=PUBLIC_FILE: raise RuntimeError("Unexpected fixture redirect")
                 fixture=response.read(100_001)
@@ -73,6 +96,8 @@ def run():
                 call(*args,"-only-testing:Checks/RoutingTests/testPublishedAppOpensInSafari","test",timeout=540)
                 raise SystemExit("BLOCKED: Apple Shortcuts is absent from this runtime; no Siri/Clock shortcut test can pass.")
             call(*args,"test",timeout=650)
+            if clock is None:
+                raise SystemExit("BLOCKED: Clock is absent from the installed-app inventory. The native alarm check remains open.")
     finally:
         call("xcrun","simctl","delete",udid,check=False)
 

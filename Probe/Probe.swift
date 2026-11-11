@@ -16,13 +16,23 @@ private func shortcut(_ text: String? = nil) {
 }
 
 @main struct Probe: App {
+    init() {
+        // Files exposes this copy under On My iPhone. The signed bytes stay intact.
+        if let source = Bundle.main.url(forResource: "ShagAttack", withExtension: "shortcut"),
+           let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let copy = documents.appendingPathComponent(source.lastPathComponent)
+            if !FileManager.default.fileExists(atPath: copy.path) {
+                try? FileManager.default.copyItem(at: source, to: copy)
+            }
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             VStack(spacing: 20) {
                 Button("Open public app") { UIApplication.shared.open(URL(string: production)!) }
-                // The signed file is copied to the app's bundle at build time.
-                if let file = Bundle.main.url(forResource: "ShagAttack", withExtension: "shortcut") {
-                    ShareLink(item: file) { Text("Import test shortcut") }
+                Button("Open published shortcut") {
+                    UIApplication.shared.open(URL(string: production + "/shortcuts/ShagAttack.shortcut")!)
                 }
                 Button("Run exact name") { shortcut() }
                 Button("Pair test simulator") {

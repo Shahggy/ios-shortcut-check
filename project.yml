@@ -12,6 +12,15 @@ targets:
   Probe:
     type: application
     platform: iOS
+    info:
+      path: Generated/Probe-Info.plist
+      properties:
+        CFBundleDisplayName: Shortcut Lab
+        CFBundleShortVersionString: '1.0'
+        CFBundleVersion: '1'
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UILaunchScreen: {}
     sources:
       - path: Probe/Probe.swift
       - path: Probe/ShagAttack.shortcut
@@ -19,7 +28,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.example.shortcutlab.probe
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        GENERATE_INFOPLIST_FILE: NO
   Checks:
     type: bundle.ui-testing
     platform: iOS
