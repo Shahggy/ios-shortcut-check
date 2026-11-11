@@ -1,156 +1,207 @@
 import XCTest
+import Vision
 
 final class RoutingTests: XCTestCase {
     private let host = XCUIApplication()
     private let shortcuts = XCUIApplication(bundleIdentifier: "com.apple.shortcuts")
-    private let spring = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-    private let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
     private let files = XCUIApplication(bundleIdentifier: "com.apple.DocumentsApp")
+    private let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
     private let siri = XCUIApplication(bundleIdentifier: "com.apple.SiriViewService")
-    private var surfaces: [XCUIApplication] { [shortcuts, host, siri, spring] }
+    private let home = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+    private let unpaired = "öffne mein tag in safari"
+    private var lastScreen = ""
 
-    private func visible(_ part: String, in apps: [XCUIApplication]) -> Bool {
-        let predicate = NSPredicate(format: "label CONTAINS[c] %@", part)
-        return apps.filter { $0.state == .runningForeground }.contains {
-            $0.descendants(matching: .any).matching(predicate).allElementsBoundByIndex.contains { $0.isHittable }
-        }
-    }
-    @discardableResult private func tap(_ labels: [String], in apps: [XCUIApplication]) -> Bool {
-        for app in apps where app.state == .runningForeground {
-            for title in labels {
-                let item = app.descendants(matching: .any).matching(NSPredicate(format: "label ==[c] %@", title)).firstMatch
-                if item.exists && item.isHittable { item.tap(); return true }
-            }
-        }
-        return false
-    }
-    private func until(_ seconds: TimeInterval, _ condition: () -> Bool) -> Bool {
-        let end = Date().addingTimeInterval(seconds)
-        repeat { if condition() { return true }; RunLoop.current.run(until: Date().addingTimeInterval(0.4)) } while Date() < end
-        return false
-    }
-    private func action(_ title: String) { host.activate(); host.buttons[title].tap() }
-    private func dismiss() { _ = tap(["Done","Fertig","OK"], in: surfaces) }
-    private func evidence(_ message: String) { print("SIMULATOR_EVIDENCE " + message) }
-
-    private func screen(_ stage: String) {
-        // Only labels from a fresh, signed-out simulator. Never include URLs or pairing strings.
-        for (name, app) in [("Files", files), ("Shortcuts", shortcuts), ("Safari", safari), ("Siri", siri), ("Probe", host), ("Home", spring)]
-            where app.state == .runningForeground {
-            let labels = app.debugDescription.components(separatedBy: .newlines)
-                .compactMap { line -> String? in
-                    guard let marker = line.range(of: "label: '") else { return nil }
-                    let label = String(line[marker.upperBound...].prefix(while: { $0 != "'" }))
-                    guard label.count < 140, !label.contains("://"), !label.contains("@"),
-                          label.range(of:"[a-f0-9]{32,}",options:.regularExpression) == nil else { return nil }
-                    return label
-                }
-            print("SIMULATOR_SCREEN \(stage) \(name) \(labels.prefix(45).joined(separator: " | "))")
-        }
+    private struct Line {
+        let label: String
+        let box: CGRect
     }
 
-    private func tapFileItem(_ name: String, in app: XCUIApplication) -> Bool {
+    private func folded(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "de_DE"))
+            .lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    // Reading the rendered screen also works when Safari's accessibility tree stalls.
+    private func lines(_ stage: String) -> [Line] {
+        guard let image = XCUIScreen.main.screenshot().image.cgImage else { return [] }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .fast
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["en-US", "de-DE"]
+        do { try VNImageRequestHandler(cgImage: image).perform([request]) }
+        catch { print("SIMULATOR_SCREEN \(stage) OCR unavailable"); return [] }
+        let result = (request.results ?? []).compactMap { observed -> Line? in
+            guard let label = observed.topCandidates(1).first?.string else { return nil }
+            return Line(label: label, box: observed.boundingBox)
+        }.sorted { $0.box.midY > $1.box.midY }
+        let publicLabels = result.map(\.label).filter {
+            $0.count < 120 && !$0.contains("@") && !$0.contains("://") && !$0.contains("&key=") &&
+                $0.range(of: "[A-Fa-f0-9]{32,}", options: .regularExpression) == nil
+        }
+        let summary = stage + " " + publicLabels.prefix(32).joined(separator: " | ")
+        if summary != lastScreen { print("SIMULATOR_SCREEN " + summary); lastScreen = summary }
+        return result
+    }
+
+    private func contains(_ part: String, _ screen: [Line]) -> Bool {
+        folded(screen.map(\.label).joined(separator:" ")).contains(folded(part))
+    }
+
+    // Interact only with labels actually observed on the empty simulator.
+    @discardableResult private func tap(_ names: [String], on app: XCUIApplication,
+                                        screen: [Line], prefix: Bool = false) -> Bool {
         guard app.state == .runningForeground else { return false }
-        let match = NSPredicate(format: "label CONTAINS[c] %@", name)
-        for type in [XCUIElement.ElementType.cell, .button, .link, .staticText] {
-            let item = app.descendants(matching:type).matching(match).firstMatch
-            if item.exists && item.isHittable { item.tap(); return true }
+        for name in names {
+            let wanted = folded(name)
+            guard let item = screen.last(where: {
+                let actual = folded($0.label)
+                return actual == wanted || (prefix && actual.hasPrefix(wanted + " "))
+            }) else { continue }
+            app.coordinate(withNormalizedOffset: CGVector(dx:item.box.midX,dy:1-item.box.midY)).tap()
+            return true
         }
         return false
     }
 
-    private func acceptImport() -> Bool {
-        if tap(["Add Shortcut","Kurzbefehl hinzufügen"], in:[shortcuts,files,safari]) { return true }
-        return visible("ShagAttack",in:[shortcuts]) && tap(["Add","Hinzufügen"],in:[shortcuts])
+    private func observe(_ stage: String, seconds: TimeInterval,
+                         _ handler: ([Line]) -> Bool) -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        repeat {
+            if handler(lines(stage)) { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.7))
+        } while Date() < end
+        return false
     }
 
-    private func importFromDownload() -> Bool {
-        action("Open published shortcut")
-        var downloaded = false, openedList = false, openedFile = false, openedMenu = false
-        let added = until(18) {
-            if self.acceptImport() { return true }
-            if !downloaded && self.tap(["Download","Laden","Herunterladen"],in:[self.safari]) {
-                downloaded = true
-            } else if downloaded && !openedList && self.tap(["Downloads","Show Downloads","Downloads anzeigen"],in:[self.safari]) {
-                openedList = true
-            } else if downloaded && !openedList && !openedMenu && self.tap(["Page Menu","Seitenmenü"],in:[self.safari]) {
-                openedMenu = true
-            } else if openedList && !openedFile && self.tapFileItem("ShagAttack",in:self.safari) {
-                openedFile = true
+    private func action(_ title: String) {
+        host.activate()
+        host.buttons[title].tap()
+    }
+
+    private func evidence(_ text: String) { print("SIMULATOR_EVIDENCE " + text) }
+
+    private func prepareLibrary() {
+        shortcuts.launch()
+        let initial = lines("shortcuts_library")
+        if contains("Welcome",initial) || contains("Willkommen",initial) {
+            tap(["Continue","Weiter","Get Started"],on:shortcuts,screen:initial)
+        }
+    }
+
+    // Prefer the verified copy in the normal Files app. Try Safari's download
+    // separately if this runtime cannot present the Files import sheet.
+    private func importFile(inSafari: Bool) -> Bool {
+        if inSafari { action("Open published shortcut") }
+        else if SystemApps.hasFiles { files.launch() }
+        else { return false }
+        var taken = Set<String>()
+        return observe(inSafari ? "safari_import" : "files_import", seconds:50) { screen in
+            guard let front = [self.shortcuts,self.files,self.safari,self.home].first(where: { $0.state == .runningForeground }) else { return false }
+            func once(_ key: String, _ names: [String], prefix: Bool = false) -> Bool {
+                guard !taken.contains(key), self.tap(names,on:front,screen:screen,prefix:prefix) else { return false }
+                taken.insert(key)
+                return true
+            }
+            if self.tap(["Add Shortcut","Kurzbefehl hinzufügen","Add to Shortcuts"],on:front,screen:screen) {
+                self.evidence("signed_shortcut_add_confirmed")
+                return true
+            }
+            if front === self.shortcuts && self.contains("ShagAttack",screen) {
+                if self.tap(["Add","Hinzufügen"],on:front,screen:screen) {
+                    self.evidence("signed_shortcut_add_confirmed")
+                }
+                // The next assertion requires the unique output from the actual workflow.
+                return true
+            }
+            if front === self.files {
+                if once("file",["ShagAttack","ShagAttack.shortcut"],prefix:true) { return false }
+                if once("folder",["Shortcut Lab","Probe"],prefix:true) { return false }
+                if once("local",["On My iPhone","Auf meinem iPhone"],prefix:true) { return false }
+                if once("browse",["Browse","Durchsuchen"]) { return false }
+                if once("fileWelcome",["Continue","Weiter"]) { return false }
+                _ = once("openWith",["Open in Shortcuts","In Kurzbefehle öffnen","Open With","Öffnen mit","Shortcuts","Kurzbefehle"])
+            } else if front === self.safari {
+                if once("download",["Download","Laden","Herunterladen","View","Anzeigen"]) { return false }
+                if once("downloads",["Downloads","Show Downloads","Downloads anzeigen"]) { return false }
+                if once("openFile",["ShagAttack.shortcut","ShagAttack"],prefix:true) { return false }
+                _ = once("pageMenu",["Page Menu","Seitenmenü"])
+            } else if self.contains("Shortcuts",screen) || self.contains("ShagAttack",screen) {
+                _ = once("open",["Open","Öffnen","Continue","Weiter"])
             }
             return false
         }
-        if downloaded { evidence("safari_download_accepted") }
-        if !added { screen("download") }
-        return added
     }
 
-    private func importFromFiles() -> Bool {
-        guard SystemApps.hasFiles else { return false }
-        files.launch()
-        _ = tap(["Continue","Weiter"],in:[files])
-        if !tapFileItem("ShagAttack",in:files) {
-            _ = tap(["Browse","Durchsuchen"],in:[files])
-            let local = until(8) { self.tapFileItem("On My iPhone",in:self.files) || self.tapFileItem("Auf meinem iPhone",in:self.files) }
-            guard local else { screen("files_locations"); return false }
-            let folder = until(8) { self.tapFileItem("Shortcut Lab",in:self.files) }
-            guard folder else { screen("files_folders"); return false }
-            let selected = until(8) { self.tapFileItem("ShagAttack",in:self.files) }
-            guard selected else { screen("files_documents"); return false }
-        }
-        evidence("signed_file_opened_from_files")
-        let confirmed = until(15) { self.acceptImport() }
-        if !confirmed { screen("file_opened") }
-        return confirmed
+    private func directResult() -> Bool {
+        action("Run exact name")
+        return observe("direct",seconds:15) { self.contains(self.unpaired,$0) }
     }
 
     func testPublishedAppOpensInSafari() {
-        host.launch(); action("Open public app")
-        let loaded = until(30) {
-            self.safari.state == .runningForeground && self.safari.webViews.firstMatch.exists &&
-            (self.visible("anmelden", in:[self.safari]) || self.visible("E-Mail", in:[self.safari]))
+        host.launch()
+        action("Open public app")
+        defer { safari.terminate() }
+        let loaded = observe("public_safari",seconds:50) {
+            self.safari.state == .runningForeground &&
+            (self.contains("Dein Tag auf allen", $0) || self.contains("Danach direkt loslegen", $0))
         }
-        XCTAssertTrue(loaded, "The public account-free sign-in page was not observed in simulated Safari.")
+        XCTAssertTrue(loaded,"The rendered application sign-in screen was not observed.")
         if loaded { evidence("public_web_app_opened_in_simulated_safari") }
     }
 
-    func testSignedShortcutRoutingAndClock() throws {
+    func testShortcutFileImportAndDirectStart() {
         host.launch()
-        shortcuts.launch()
-        _ = tap(["Continue","Weiter","Get Started","Not Now","Nicht jetzt"],in:[shortcuts])
-        let added = importFromDownload() || importFromFiles()
-        if added { evidence("signed_shortcut_add_confirmed") }
-
-        let unpaired = "Öffne Mein Tag in Safari"
-        action("Run exact name")
-        guard until(25,{self.visible(unpaired,in:self.surfaces)}) else {
-            screen("named_launch")
-            XCTFail("The workflow-specific direct-start message was not observed after the import attempt."); return
+        prepareLibrary()
+        _ = importFile(inSafari:false)
+        var direct = directResult()
+        if !direct {
+            _ = importFile(inSafari:true)
+            direct = directResult()
         }
-        evidence("named_direct_start_reached_actual_workflow")
-        dismiss(); shortcuts.terminate(); host.activate(); XCUIDevice.shared.press(.home)
-        guard !visible(unpaired,in:surfaces) else { XCTFail("Stale prior result prevents a valid Siri assertion."); return }
-        // Apple supplies recognized text. This does NOT use the user's voice or microphone.
+        XCTAssertTrue(direct,"The direct launch did not produce the specific unpaired-workflow message.")
+        if direct { evidence("named_direct_start_reached_actual_workflow") }
+    }
+
+    // The suite records Siri's own response even if the import test failed.
+    func testSiriRecognizedName() {
+        shortcuts.terminate()
+        host.launch()
+        XCUIDevice.shared.press(.home)
+        guard !contains(unpaired,lines("before_siri")) else { XCTFail("Stale result before the Siri call."); return }
+        evidence("siri_name_request_attempted")
         XCUIDevice.shared.siriService.activate(voiceRecognitionText:"ShagAttack")
-        if until(25,{self.visible(unpaired,in:self.surfaces)}) { evidence("siri_recognized_text_routed_to_exact_workflow") }
-        else { screen("siri_result"); XCTFail("Siri did not produce the workflow-specific result for the recognized text ShagAttack.") }
-        dismiss(); host.activate(); action("Pair test simulator")
-        guard until(25,{
-            if self.visible("Verbunden. Sage Siri",in:self.surfaces) { return true }
-            _ = self.tap(["Allow Once","Einmal erlauben","Allow","Erlauben"],in:[self.shortcuts]);return false
-        }) else { screen("pairing_result"); XCTFail("The disposable pairing file could not be saved; Clock is untested.");return }
-        evidence("synthetic_simulator_pairing_acknowledged"); dismiss()
+        let routed = observe("siri",seconds:25) { self.contains(self.unpaired,$0) }
+        if routed { evidence("siri_recognized_text_routed_to_exact_workflow") }
+        else { XCTFail("Siri did not show the workflow-specific result for the recognized name.") }
+    }
+
+    func testSyntheticPairAndClock() {
+        host.launch()
+        action("Pair test simulator")
+        let paired = observe("pair",seconds:25) {
+            if self.contains("Verbunden Sage Siri",$0) { return true }
+            _ = self.tap(["Allow Once","Einmal erlauben","Allow","Erlauben"],on:self.shortcuts,screen:$0)
+            return false
+        }
+        guard paired else { XCTFail("No pairing acknowledgement from the actual shortcut."); return }
+        evidence("synthetic_simulator_pairing_acknowledged")
         guard let clockID = SystemApps.clock else { evidence("clock_unavailable_in_runtime"); return }
         action("Send test alarm")
-        guard until(25,{
-            if self.visible("Schlummern ist eingeschaltet",in:self.surfaces) { return true }
-            _ = self.tap(["Allow Once","Einmal erlauben","Allow","Erlauben"],in:[self.shortcuts]);return false
-        }) else { XCTFail("Shortcut did not acknowledge the Clock action.");return }
-        dismiss()
+        let sent = observe("alarm",seconds:25) {
+            if self.contains("Schlummern ist eingeschaltet",$0) { return true }
+            _ = self.tap(["Allow Once","Einmal erlauben","Allow","Erlauben"],on:self.shortcuts,screen:$0)
+            return false
+        }
+        guard sent else { XCTFail("No Clock acknowledgement."); return }
         let clock = XCUIApplication(bundleIdentifier:clockID)
-        clock.launch(); _ = tap(["Alarm","Alarms","Wecker"],in:[clock])
-        let exists = until(15,{self.visible("Simulatorprobe",in:[clock])})
-        XCTAssertTrue(exists,"The named test alarm was not observed in Apple's Clock app.")
-        if exists { evidence("named_alarm_observed_in_simulated_clock_no_sound_or_physical_snooze_claim") }
+        clock.launch()
+        let found = observe("clock",seconds:18) {
+            if self.contains("Simulatorprobe",$0) { return true }
+            _ = self.tap(["Alarms","Alarm","Wecker"],on:clock,screen:$0)
+            return false
+        }
+        XCTAssertTrue(found,"The named alarm was not visible in Clock.")
+        if found { evidence("named_alarm_observed_in_simulated_clock_no_sound_or_physical_snooze_claim") }
     }
 }
