@@ -28,8 +28,11 @@ final class RoutingTests: XCTestCase {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .fast
         request.usesLanguageCorrection = false
-        request.recognitionLanguages = ["en-US", "de-DE"]
-        do { try VNImageRequestHandler(cgImage: image).perform([request]) }
+        if let supported = try? request.supportedRecognitionLanguages() {
+            let languages = ["en-US", "de-DE"].filter { supported.contains($0) }
+            if !languages.isEmpty { request.recognitionLanguages = languages }
+        }
+        do { try VNImageRequestHandler(cgImage:image,options:[:]).perform([request]) }
         catch { print("SIMULATOR_SCREEN \(stage) OCR unavailable"); return [] }
         let result = (request.results ?? []).compactMap { observed -> Line? in
             guard let label = observed.topCandidates(1).first?.string else { return nil }
