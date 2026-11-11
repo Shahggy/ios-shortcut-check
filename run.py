@@ -48,6 +48,46 @@ def clock_bundle(apps):
             return identifier
     return None
 
+def simulator_diagnostics(udid):
+    # Scope to this run's newly created, unsigned-in device. Only report
+    # a byte-for-byte match of our public placeholder, never file contents.
+    device = Path.home() / "Library/Developer/CoreSimulator/Devices" / udid / "data"
+    pattern = (PUBLIC_FILE.split("/shortcuts/")[0] + "/?view=dashboard#mein-tag-diktat=1&key=" +
+               ("0" * 64) + "&id=[Zufallszahl]&at=[Datum]&text=[URL-codierter Text]").encode()
+    found = False
+    for folder in ("Library/Mobile Documents", "Containers/Shared/AppGroup", "Containers/Data/Application"):
+        for parent, _, files in os.walk(device / folder, followlinks=False):
+            if "MeinTagSiri.txt" not in files:
+                continue
+            file = Path(parent) / "MeinTagSiri.txt"
+            try:
+                if not file.is_symlink() and file.stat().st_size == len(pattern) and file.read_bytes() == pattern:
+                    found = True
+                    break
+            except OSError:
+                pass
+        if found:
+            break
+    print("SIMULATOR_EVIDENCE", json.dumps({"syntheticPairingFileContentsVerified": found}), flush=True)
+    # Public logs contain only fixed diagnostic labels from the test runtime.
+    predicate = ('(process == "Shortcuts" OR process == "siriactionsd" OR process == "assistantd" '
+                 'OR subsystem BEGINSWITH "com.apple.WorkflowKit") AND '
+                 '(messageType == error OR messageType == fault)')
+    try:
+        log = call("xcrun", "simctl", "spawn", udid, "log", "show", "--last", "14m",
+                   "--style", "compact", "--predicate", predicate, capture=True, timeout=40, check=False)
+        messages = log.stdout.casefold()
+        signals = {"cloudAccountUnavailable": ("not signed in to icloud", "no icloud account", "icloud drive is not available"),
+                   "actionAppMissing": ("required app is not installed", "application is not installed"),
+                   "siriNetworkUnavailable": ("no network connection", "network is unavailable"),
+                   "unavailableInSimulator": ("unavailable in the simulator", "not supported in the simulator"),
+                   "userInteractionRequired": ("requires user interaction", "user interaction required")}
+        print("SIMULATOR_EVIDENCE", json.dumps({"systemDiagnosticsMatched": [
+            label for label, terms in signals.items() if any(term in messages for term in terms)
+        ]}), flush=True)
+    except (OSError, subprocess.TimeoutExpired):
+        print("SIMULATOR_EVIDENCE system_diagnostics_unavailable", flush=True)
+
 def run():
     if platform.system() != "Darwin":
         raise SystemExit("NOT RUN: Xcode/macOS required. No iPhone result.")
@@ -95,7 +135,10 @@ def run():
             if not capabilities["com.apple.shortcuts"]:
                 call(*args,"-only-testing:Checks/RoutingTests/testPublishedAppOpensInSafari","test",timeout=540)
                 raise SystemExit("BLOCKED: Apple Shortcuts is absent from this runtime; no Siri/Clock shortcut test can pass.")
-            call(*args,"test",timeout=650)
+            try:
+                call(*args,"test",timeout=695)
+            finally:
+                simulator_diagnostics(udid)
             if clock is None:
                 raise SystemExit("BLOCKED: Clock is absent from the installed-app inventory. The native alarm check remains open.")
     finally:

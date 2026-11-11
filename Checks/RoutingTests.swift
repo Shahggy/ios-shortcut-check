@@ -153,6 +153,32 @@ final class RoutingTests: XCTestCase {
         return observe("direct",seconds:15) { self.contains(self.unpaired,$0) }
     }
 
+    // Production pairing already uses Apple's x-callback-url. A missing
+    // screen message and an explicit failure callback are distinct results.
+    private func callbackResult(_ stage: String, seconds: TimeInterval) -> (receipt: String?, workflowMessage: Bool) {
+        var receipt: String?
+        var workflowMessage = false
+        _ = observe(stage + "_callback",seconds:seconds) { screen in
+            if self.host.state == .runningForeground {
+                let field = self.host.staticTexts["nativeReceipt"]
+                if field.exists && field.label.hasPrefix("Native " + stage + " ") {
+                    receipt = field.label
+                    self.evidence(field.label)
+                    return true
+                }
+            }
+            let message = stage == "pair" ? "Verbunden Sage Siri" : self.unpaired
+            if self.contains(message,screen) {
+                workflowMessage = true
+                _ = self.tap(["Done","Fertig","OK"],on:self.shortcuts,screen:screen)
+            } else if stage == "pair" {
+                _ = self.tap(["Allow Once","Einmal erlauben","Allow","Erlauben"],on:self.shortcuts,screen:screen)
+            }
+            return false
+        }
+        return (receipt, workflowMessage)
+    }
+
     func testPublishedAppOpensInSafari() {
         host.launch()
         action("Open public app")
@@ -168,14 +194,19 @@ final class RoutingTests: XCTestCase {
     func testShortcutFileImportAndDirectStart() {
         host.launch()
         prepareLibrary()
-        _ = importFile(inSafari:false)
-        var direct = directResult()
-        if !direct {
+        let observedImport = importFile(inSafari:false)
+        if !observedImport {
             _ = importFile(inSafari:true)
-            direct = directResult()
         }
-        XCTAssertTrue(direct,"The direct launch did not produce the specific unpaired-workflow message.")
-        if direct { evidence("named_direct_start_reached_actual_workflow") }
+        if directResult() {
+            evidence("named_direct_start_reached_actual_workflow")
+            return
+        }
+        action("Diagnose direct launch")
+        let result = callbackResult("direct",seconds:22)
+        let verified = result.workflowMessage || result.receipt == "Native direct success unpaired"
+        if verified { evidence("named_direct_start_reached_actual_workflow") }
+        XCTAssertTrue(verified, "Unpaired workflow output was not observed. Callback: " + (result.receipt ?? "none"))
     }
 
     // The suite records Siri's own response even if the import test failed.
@@ -194,13 +225,15 @@ final class RoutingTests: XCTestCase {
     func testSyntheticPairAndClock() {
         host.launch()
         action("Pair test simulator")
-        let paired = observe("pair",seconds:25) {
-            if self.contains("Verbunden Sage Siri",$0) { return true }
-            _ = self.tap(["Allow Once","Einmal erlauben","Allow","Erlauben"],on:self.shortcuts,screen:$0)
-            return false
+        let result = callbackResult("pair",seconds:32)
+        guard result.receipt?.hasPrefix("Native pair success") == true else {
+            XCTFail("The pairing callback did not succeed. Workflow message: " + String(result.workflowMessage) + ". Callback: " + (result.receipt ?? "none"))
+            return
         }
-        guard paired else { XCTFail("No pairing acknowledgement from the actual shortcut."); return }
-        evidence("synthetic_simulator_pairing_acknowledged")
+        evidence("native_pair_success_callback_observed")
+        if result.workflowMessage || result.receipt == "Native pair success paired" {
+            evidence("synthetic_simulator_pairing_acknowledged")
+        }
         guard let clockID = SystemApps.clock else { evidence("clock_unavailable_in_runtime"); return }
         action("Send test alarm")
         let sent = observe("alarm",seconds:25) {

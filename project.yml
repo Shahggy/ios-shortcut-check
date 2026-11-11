@@ -20,6 +20,8 @@ targets:
         CFBundleVersion: '1'
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        CFBundleURLTypes:
+          - CFBundleURLSchemes: [shortlab-check]
         UILaunchScreen: {}
     sources:
       - path: Probe/Probe.swift
